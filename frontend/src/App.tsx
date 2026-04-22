@@ -1,9 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 
+type LanguageCode = 'fr' | 'en' | 'es' | 'de' | 'it';
+
 const App: React.FC = () => {
   const [isTranslating, setIsTranslating] = useState(false);
-  const [sourceLang, setSourceLang] = useState('fr');
-  const [targetLang, setTargetLang] = useState('en');
+  const [sourceLang, setSourceLang] = useState<LanguageCode>('fr');
+  const [targetLang, setTargetLang] = useState<LanguageCode>('en');
   const [statusMessage, setStatusMessage] = useState('Ready');
   const [isWsConnected, setIsWsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
@@ -12,7 +14,7 @@ const App: React.FC = () => {
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
 
-  const languageOptions = {
+  const languageOptions: Record<LanguageCode, string> = {
     fr: 'Français 🇫🇷',
     en: 'English 🇬🇧',
     es: 'Español 🇪🇸',
@@ -20,8 +22,11 @@ const App: React.FC = () => {
     it: 'Italiano 🇮🇹',
   };
 
+  // URL WebSocket configurable via variable d'environnement (Render)
+  const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/translate';
+
   useEffect(() => {
-    const ws = new WebSocket('ws://localhost:8000/ws/translate');
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     ws.onopen = () => {
       setIsWsConnected(true);
@@ -55,7 +60,7 @@ const App: React.FC = () => {
       if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.close();
       stopTranslation();
     };
-  }, [sourceLang, targetLang]);
+  }, [sourceLang, targetLang, wsUrl]);
 
   const startTranslation = async () => {
     if (!isWsConnected) {
@@ -136,13 +141,13 @@ const App: React.FC = () => {
         <h1 style={{ textAlign: 'center', color: 'white', marginBottom: '1rem' }}>Two-Way Translator</h1>
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem', marginBottom: '2rem', flexWrap: 'wrap' }}>
-          <select value={sourceLang} onChange={(e) => setSourceLang(e.target.value)} disabled={isTranslating} style={{ padding: '0.6rem 1rem', borderRadius: '2rem', background: '#1F2937', color: 'white', border: 'none' }}>
+          <select value={sourceLang} onChange={(e) => setSourceLang(e.target.value as LanguageCode)} disabled={isTranslating} style={{ padding: '0.6rem 1rem', borderRadius: '2rem', background: '#1F2937', color: 'white', border: 'none' }}>
             {Object.entries(languageOptions).map(([code, name]) => (
               <option key={code} value={code}>{name}</option>
             ))}
           </select>
           <button onClick={swapLanguages} disabled={isTranslating} style={{ background: '#3B82F6', border: 'none', borderRadius: '2rem', padding: '0.6rem 1rem', color: 'white', cursor: 'pointer' }}>⇄</button>
-          <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} disabled={isTranslating} style={{ padding: '0.6rem 1rem', borderRadius: '2rem', background: '#1F2937', color: 'white', border: 'none' }}>
+          <select value={targetLang} onChange={(e) => setTargetLang(e.target.value as LanguageCode)} disabled={isTranslating} style={{ padding: '0.6rem 1rem', borderRadius: '2rem', background: '#1F2937', color: 'white', border: 'none' }}>
             {Object.entries(languageOptions).map(([code, name]) => (
               <option key={code} value={code}>{name}</option>
             ))}
