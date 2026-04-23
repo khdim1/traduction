@@ -2,134 +2,109 @@ import asyncio
 import base64
 import json
 import os
+import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 import httpx
-from deepgram import DeepgramClient, LiveTranscriptionEvents, LiveOptions
-
-load_dotenv()
+import vosk
 
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=["http://localhost:3000", "http://localhost:5173", "https://*.onrender.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+MODEL_PATHS = {
+    "fr": "models/fr",
+    "en": "models/en",
+}
+models = {}
 
-if not DEEPGRAM_API_KEY or not MISTRAL_API_KEY:
-    raise Exception("Missing API keys")
+for lang, path in MODEL_PATHS.items():
+    if os.path.exists(path):
+        models[lang] = vosk.Model(path)
+        print(f"✅ Modèle Vosk {lang} chargé")
+    else:
+        print(f"⚠️ Modèle {lang} manquant dans {path}")
 
-deepgram_client = DeepgramClient(api_key=DEEPGRAM_API_KEY)
+translation_cache = {}
+CACHE_TTL = 60
 
-class RealtimeTranslator:
+class Translator:
     def __init__(self, websocket: WebSocket, source_lang: str, target_lang: str):
-        self.client_ws = websocket
+        self.websocket = websocket
         self.source_lang = source_lang
         self.target_lang = target_lang
-        self.dg_connection = None
-        self.loop = asyncio.get_running_loop()
-        self.translation_queue = asyncio.Queue()
-        self.processing_task = None
-        self.is_connected = False
-
-    async def connect_deepgram(self):
-        self.dg_connection = deepgram_client.listen.live.v("1")
-        
-        def on_message(_, result, **kwargs):
-            asyncio.run_coroutine_threadsafe(self.handle_transcription(result), self.loop)
-        
-        def on_error(_, error, **kwargs):
-            print(f"Deepgram error: {error}")
-            self.is_connected = False
-        
-        def on_close(_, **kwargs):
-            print("Deepgram connection closed")
-            self.is_connected = False
-        
-        self.dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
-        self.dg_connection.on(LiveTranscriptionEvents.Error, on_error)
-        self.dg_connection.on(LiveTranscriptionEvents.Close, on_close)
-        
-        options = LiveOptions(
-            model="nova-2",
-            language=self.source_lang,
-            punctuate=True,
-            interim_results=True,          # Flux continu
-            encoding="linear16",
-            sample_rate=16000,
-            channels=1,
-            endpointing=300,               # 300ms de silence pour finaliser
-        )
-        self.dg_connection.start(options)
-        self.is_connected = True
-        print(f"✅ Deepgram connecté ({self.source_lang})")
-
-    async def handle_transcription(self, result):
-        text = result.channel.alternatives[0].transcript
-        if text:
-            is_final = getattr(result, 'is_final', False)
-            await self.translation_queue.put((text.strip(), is_final))
-
-    async def feed_audio(self, audio_bytes: bytes):
-        if self.dg_connection is None or not self.is_connected:
-            await self.connect_deepgram()
-        try:
-            self.dg_connection.send(audio_bytes)
-        except Exception as e:
-            print(f"Erreur envoi: {e}")
-            self.is_connected = False
+        self.audio_buffer = b""
+        self.rec = vosk.KaldiRecognizer(models[source_lang], 16000)
+        self.rec.SetWords(False)
+        self.sentence_buffer = ""
+        self.last_speech_time = 0
+        self.silence_timeout = 0.8  # secondes
 
     async def translate_text(self, text: str) -> str:
         if not text.strip():
             return ""
-        async with httpx.AsyncClient(timeout=1.5) as client:
-            headers = {
-                "Authorization": f"Bearer {MISTRAL_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "open-mistral-nemo",
-                "messages": [{"role": "user", "content": f"Translate the following {self.source_lang} text to {self.target_lang}. Output ONLY the translation, no extra text, no explanations.\n\n{text}"}],
-                "temperature": 0.0
-            }
+        cache_key = f"{self.source_lang}|{self.target_lang}|{text}"
+        if cache_key in translation_cache:
+            entry = translation_cache[cache_key]
+            if time.time() - entry['time'] < CACHE_TTL:
+                return entry['text']
+
+        async with httpx.AsyncClient(timeout=0.9) as client:
+            url = "https://api.mymemory.translated.net/get"
+            params = {"q": text, "langpair": f"{self.source_lang}|{self.target_lang}"}
             try:
-                resp = await client.post("https://api.mistral.ai/v1/chat/completions", headers=headers, json=payload)
-                if resp.status_code == 200:
-                    return resp.json()["choices"][0]["message"]["content"].strip()
-                else:
-                    return text
+                resp = await client.get(url, params=params)
+                data = resp.json()
+                translated = data["responseData"]["translatedText"]
+                translated = translated.replace('&#39;', "'").split('/')[0].strip()
+                translation_cache[cache_key] = {'text': translated, 'time': time.time()}
+                return translated
             except Exception:
                 return text
 
-    async def process_translations(self):
-        while True:
-            text, is_final = await self.translation_queue.get()
-            if len(text.split()) < 1:
-                continue
-            # Ne traduire que les segments finals (fin de phrase ou pause)
-            if is_final:
-                print(f"📝 Transcription: {text}")
-                translated = await self.translate_text(text)
-                print(f"🌐 Traduction: {translated}")
-                await self.client_ws.send_text(json.dumps({
-                    "type": "translated_text",
-                    "text": translated
-                }))
+    async def feed_audio(self, audio_bytes: bytes):
+        self.audio_buffer += audio_bytes
+        while len(self.audio_buffer) >= 8000:
+            chunk = self.audio_buffer[:8000]
+            self.audio_buffer = self.audio_buffer[8000:]
+            if self.rec.AcceptWaveform(chunk):
+                result = json.loads(self.rec.Result())
+                text = result.get("text", "")
+                if text:
+                    self.sentence_buffer += " " + text
+                    self.last_speech_time = time.time()
+            else:
+                # Vérifier le silence prolongé
+                if self.sentence_buffer and (time.time() - self.last_speech_time > self.silence_timeout):
+                    await self.finalize_sentence()
+        # Si le buffer est vide et qu'il y a une phrase en attente, finaliser (pour la toute fin)
+        if not self.audio_buffer and self.sentence_buffer:
+            await self.finalize_sentence()
 
-    async def start_processing(self):
-        self.processing_task = asyncio.create_task(self.process_translations())
+    async def finalize_sentence(self):
+        if not self.sentence_buffer.strip():
+            return
+        text = self.sentence_buffer.strip()
+        # Ne pas traduire si trop court
+        if len(text.split()) < 2:
+            self.sentence_buffer = ""
+            return
+        print(f"📝 [{self.source_lang}] {text}")
+        translated = await self.translate_text(text)
+        print(f"🌐 [{self.target_lang}] {translated}")
+        await self.websocket.send_text(json.dumps({
+            "type": "translated_text",
+            "text": translated
+        }))
+        self.sentence_buffer = ""
 
     async def close(self):
-        if self.processing_task:
-            self.processing_task.cancel()
-        if self.dg_connection:
-            self.dg_connection.finish()
+        pass
 
 @app.websocket("/ws/translate")
 async def websocket_endpoint(websocket: WebSocket):
@@ -142,10 +117,11 @@ async def websocket_endpoint(websocket: WebSocket):
             if data.get("type") == "config":
                 src = data.get("source_lang", "fr")
                 tgt = data.get("target_lang", "en")
-                translator = RealtimeTranslator(websocket, src, tgt)
-                await translator.connect_deepgram()
-                await translator.start_processing()
-                print(f"✅ Traducteur prêt: {src} -> {tgt}")
+                if src not in models or tgt not in models:
+                    await websocket.close(code=1008, reason="Langue non supportée")
+                    return
+                translator = Translator(websocket, src, tgt)
+                print(f"✅ Interprète phrase complète: {src} → {tgt}")
             elif data.get("type") == "audio" and translator:
                 audio_bytes = base64.b64decode(data.get("audio"))
                 await translator.feed_audio(audio_bytes)
