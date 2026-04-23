@@ -1,11 +1,20 @@
 import React, { useState, useRef, useEffect } from 'react';
 
 const App: React.FC = () => {
+  // Récupération des langues depuis l'URL (src=fr&tgt=en)
+  const urlParams = new URLSearchParams(window.location.search);
+  const defaultSrc = urlParams.get('src') || 'fr';
+  const defaultTgt = urlParams.get('tgt') || 'en';
+
   const [isTranslating, setIsTranslating] = useState(false);
-  const [sourceLang, setSourceLang] = useState('fr');
-  const [targetLang, setTargetLang] = useState('en');
+  const [sourceLang, setSourceLang] = useState(defaultSrc);
+  const [targetLang, setTargetLang] = useState(defaultTgt);
   const [statusMessage, setStatusMessage] = useState('Prêt');
   const [isWsConnected, setIsWsConnected] = useState(false);
+  const [translatedText, setTranslatedText] = useState('');
+  const [audioLevel, setAudioLevel] = useState(0); // pour l'animation du micro
+
+  // Refs pour le WebSocket et l'audio
   const wsRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -16,12 +25,11 @@ const App: React.FC = () => {
 
   const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/translate';
 
+  // Synthèse vocale avec file d'attente
   const speak = (text: string, lang: string) => {
     if (!window.speechSynthesis) return;
     speechQueue.current.push(text);
-    if (!isSpeaking.current) {
-      processQueue(lang);
-    }
+    if (!isSpeaking.current) processQueue(lang);
   };
 
   const processQueue = (lang: string) => {
@@ -39,6 +47,7 @@ const App: React.FC = () => {
     window.speechSynthesis.speak(utterance);
   };
 
+  // Connexion WebSocket
   useEffect(() => {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -49,7 +58,7 @@ const App: React.FC = () => {
     };
     ws.onerror = () => {
       setIsWsConnected(false);
-      setStatusMessage('Erreur WebSocket');
+      setStatusMessage('Erreur serveur');
     };
     ws.onclose = () => {
       setIsWsConnected(false);
@@ -58,6 +67,7 @@ const App: React.FC = () => {
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === 'translated_text') {
+        setTranslatedText(data.text);
         speak(data.text, targetLang);
       }
     };
@@ -67,9 +77,10 @@ const App: React.FC = () => {
     };
   }, [sourceLang, targetLang, wsUrl]);
 
+  // Capture audio et envoi des chunks
   const startTranslation = async () => {
     if (!isWsConnected) {
-      setStatusMessage('Connexion WebSocket en cours...');
+      setStatusMessage('Connexion WebSocket...');
       return;
     }
     try {
@@ -79,7 +90,25 @@ const App: React.FC = () => {
       audioContextRef.current = audioContext;
       const source = audioContext.createMediaStreamSource(stream);
       sourceNodeRef.current = source;
-      // Buffer 2048 échantillons = 128 ms
+
+      // Analyseur pour le niveau sonore (animation)
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      source.connect(analyser);
+      const updateLevel = () => {
+        if (!isTranslating) return;
+        analyser.getByteTimeDomainData(dataArray);
+        let max = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          const v = (dataArray[i] - 128) / 128;
+          max = Math.max(max, Math.abs(v));
+        }
+        setAudioLevel(max);
+        requestAnimationFrame(updateLevel);
+      };
+      updateLevel();
+
       const processor = audioContext.createScriptProcessor(2048, 1, 1);
       processorRef.current = processor;
       // @ts-ignore
@@ -99,9 +128,9 @@ const App: React.FC = () => {
       processor.connect(audioContext.destination);
       await audioContext.resume();
       setIsTranslating(true);
-      setStatusMessage('Écoute en continu...');
+      setStatusMessage('🎙️ Écoute active');
     } catch (err) {
-      setStatusMessage('Erreur microphone');
+      setStatusMessage("❌ Micro non autorisé");
     }
   };
 
@@ -112,6 +141,7 @@ const App: React.FC = () => {
     if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach(t => t.stop());
     setIsTranslating(false);
     setStatusMessage('Arrêté');
+    setAudioLevel(0);
     speechQueue.current = [];
     isSpeaking.current = false;
     window.speechSynthesis.cancel();
@@ -125,32 +155,208 @@ const App: React.FC = () => {
   };
 
   return (
-    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #0B1120 0%, #19212E 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
-      <div style={{ maxWidth: '750px', width: '100%', background: 'rgba(18,25,40,0.75)', backdropFilter: 'blur(16px)', borderRadius: '2rem', border: '1px solid rgba(255,255,255,0.1)', padding: '2rem' }}>
-        <h1 style={{ textAlign: 'center', color: 'white' }}>Traducteur Temps Réel</h1>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', margin: '1rem 0' }}>
-          <select value={sourceLang} onChange={(e) => setSourceLang(e.target.value)} disabled={isTranslating}>
-            <option value="fr">Français</option>
-            <option value="en">English</option>
-          </select>
-          <button onClick={swapLanguages} disabled={isTranslating}>⇄</button>
-          <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} disabled={isTranslating}>
-            <option value="en">English</option>
-            <option value="fr">Français</option>
-          </select>
+    <div style={{
+      minHeight: '100vh',
+      background: 'radial-gradient(circle at 20% 30%, #0f172a, #020617)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
+      padding: '1rem',
+      position: 'relative',
+      overflow: 'hidden'
+    }}>
+      {/* Carte principale glassmorphe */}
+      <div style={{
+        maxWidth: '800px',
+        width: '100%',
+        background: 'rgba(15, 25, 45, 0.55)',
+        backdropFilter: 'blur(18px)',
+        borderRadius: '3rem',
+        border: '1px solid rgba(255,255,255,0.2)',
+        boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.1)',
+        padding: '2rem',
+        transition: 'all 0.3s ease'
+      }}>
+        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+          <h1 style={{
+            fontSize: '2.8rem',
+            fontWeight: 700,
+            background: 'linear-gradient(135deg, #ffffff 0%, #a5b4fc 100%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            marginBottom: '0.25rem'
+          }}>
+            Traducteur Vocal
+          </h1>
+          <p style={{ color: '#94a3b8', fontSize: '0.85rem', letterSpacing: '0.5px' }}>
+            Son → Son • Temps réel • IA
+          </p>
         </div>
-        <div style={{ background: 'rgba(0,0,0,0.35)', borderRadius: '1rem', padding: '1rem', marginBottom: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-            <div style={{ width: '10px', height: '10px', borderRadius: '10px', background: isTranslating ? '#10B981' : (isWsConnected ? '#3B82F6' : '#EF4444') }} />
-            <span>{statusMessage}</span>
+
+        {/* Sélecteurs de langue */}
+        <div style={{
+          display: 'flex',
+          justifyContent: 'center',
+          gap: '1.5rem',
+          marginBottom: '2.5rem',
+          flexWrap: 'wrap'
+        }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8b9eb0' }}>Je parle</div>
+            <select
+              value={sourceLang}
+              onChange={(e) => setSourceLang(e.target.value)}
+              disabled={isTranslating}
+              style={{
+                background: '#1e293b',
+                border: '1px solid #334155',
+                borderRadius: '2rem',
+                padding: '0.5rem 1.5rem',
+                color: '#f1f5f9',
+                fontWeight: 500,
+                fontSize: '1rem',
+                cursor: isTranslating ? 'default' : 'pointer',
+                transition: 'all 0.2s',
+                outline: 'none'
+              }}
+            >
+              <option value="fr">🇫🇷 Français</option>
+              <option value="en">🇬🇧 English</option>
+            </select>
+          </div>
+          <button
+            onClick={swapLanguages}
+            disabled={isTranslating}
+            style={{
+              background: '#3b82f6',
+              border: 'none',
+              borderRadius: '3rem',
+              width: '48px',
+              height: '48px',
+              fontSize: '1.5rem',
+              cursor: isTranslating ? 'default' : 'pointer',
+              transition: 'transform 0.2s',
+              boxShadow: '0 4px 12px rgba(59,130,246,0.4)'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+            onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+          >
+            ⇄
+          </button>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px', color: '#8b9eb0' }}>J'écoute</div>
+            <select
+              value={targetLang}
+              onChange={(e) => setTargetLang(e.target.value)}
+              disabled={isTranslating}
+              style={{
+                background: '#1e293b',
+                border: '1px solid #334155',
+                borderRadius: '2rem',
+                padding: '0.5rem 1.5rem',
+                color: '#f1f5f9',
+                fontWeight: 500,
+                fontSize: '1rem',
+                cursor: isTranslating ? 'default' : 'pointer',
+                outline: 'none'
+              }}
+            >
+              <option value="en">🇬🇧 English</option>
+              <option value="fr">🇫🇷 Français</option>
+            </select>
           </div>
         </div>
-        <button onClick={isTranslating ? stopTranslation : startTranslation} disabled={!isWsConnected && !isTranslating} style={{ width: '100%', padding: '1rem', borderRadius: '2rem', fontWeight: 'bold', background: isTranslating ? '#EF4444' : '#3B82F6', color: 'white', cursor: (isTranslating || isWsConnected) ? 'pointer' : 'not-allowed' }}>
-          {isTranslating ? 'Arrêter la traduction' : 'Commencer la traduction'}
-        </button>
-        <p style={{ fontSize: '0.7rem', textAlign: 'center', marginTop: '1rem', color: '#6B7280' }}>
-          🔒 Audio local • Deepgram (transcription) + Mistral (traduction) • Synthèse vocale navigateur
-        </p>
+
+        {/* Bouton principal et animation du micro */}
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '2rem', position: 'relative' }}>
+          <div style={{ position: 'relative' }}>
+            {/* Anneau d'onde sonore (visible uniquement en écoute) */}
+            {isTranslating && (
+              <div style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                width: `${120 + audioLevel * 80}px`,
+                height: `${120 + audioLevel * 80}px`,
+                transform: 'translate(-50%, -50%)',
+                borderRadius: '50%',
+                background: 'rgba(59,130,246,0.2)',
+                transition: 'width 0.1s ease-out, height 0.1s ease-out',
+                pointerEvents: 'none',
+                zIndex: 0
+              }} />
+            )}
+            <button
+              onClick={isTranslating ? stopTranslation : startTranslation}
+              disabled={!isWsConnected && !isTranslating}
+              style={{
+                position: 'relative',
+                width: '100px',
+                height: '100px',
+                borderRadius: '50%',
+                background: isTranslating
+                  ? 'linear-gradient(135deg, #ef4444, #dc2626)'
+                  : 'linear-gradient(135deg, #3b82f6, #2563eb)',
+                border: 'none',
+                cursor: (isTranslating || isWsConnected) ? 'pointer' : 'not-allowed',
+                boxShadow: '0 10px 25px -5px rgba(0,0,0,0.3), 0 0 0 2px rgba(255,255,255,0.1)',
+                transition: 'transform 0.2s, box-shadow 0.2s',
+                fontSize: '3rem',
+                color: 'white',
+                zIndex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+              onMouseEnter={(e) => {
+                if ((isTranslating || isWsConnected)) e.currentTarget.style.transform = 'scale(1.05)';
+              }}
+              onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+            >
+              {isTranslating ? '⏹️' : '🎤'}
+            </button>
+          </div>
+        </div>
+
+        {/* Statut connecté */}
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem' }}>
+          <div style={{
+            width: '10px',
+            height: '10px',
+            borderRadius: '10px',
+            background: isTranslating ? '#10b981' : (isWsConnected ? '#3b82f6' : '#ef4444'),
+            boxShadow: isTranslating ? '0 0 8px #10b981' : 'none',
+            transition: 'all 0.2s'
+          }} />
+          <span style={{ color: '#94a3b8', fontSize: '0.8rem', fontWeight: 500 }}>{statusMessage}</span>
+        </div>
+
+        {/* Zone de traduction */}
+        <div style={{
+          background: 'rgba(0,0,0,0.4)',
+          borderRadius: '1.5rem',
+          padding: '1.2rem',
+          minHeight: '120px',
+          marginBottom: '1.5rem',
+          border: '1px solid rgba(255,255,255,0.05)',
+          transition: 'all 0.2s'
+        }}>
+          <div style={{ fontSize: '0.7rem', color: '#8b9eb0', marginBottom: '0.5rem' }}>TRADUCTION</div>
+          <div style={{
+            color: '#f1f5f9',
+            fontSize: '1.2rem',
+            fontWeight: 500,
+            wordBreak: 'break-word',
+            lineHeight: 1.5
+          }}>
+            {translatedText || "✨ La traduction apparaîtra ici..."}
+          </div>
+        </div>
+
+        <div style={{ fontSize: '0.7rem', textAlign: 'center', color: '#475569' }}>
+          🔒 Audio local • Deepgram + Mistral/MyMemory • Synthèse vocale intégrée
+        </div>
       </div>
     </div>
   );
