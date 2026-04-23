@@ -1,10 +1,12 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { PalabraClient, getLocalAudioTrack } from '@palabra-ai/translator';
 
+type Language = 'fr' | 'en' | 'es' | 'de' | 'it'; // Ajoutez les langues supportées
+
 const App: React.FC = () => {
   const [isTranslating, setIsTranslating] = useState(false);
-  const [sourceLang, setSourceLang] = useState('fr');
-  const [targetLang, setTargetLang] = useState('en');
+  const [sourceLang, setSourceLang] = useState<Language>('fr');
+  const [targetLang, setTargetLang] = useState<Language>('en');
   const [transcription, setTranscription] = useState('');
   const [translation, setTranslation] = useState('');
   const [status, setStatus] = useState('Prêt');
@@ -83,12 +85,12 @@ const App: React.FC = () => {
       <div style={{ background: 'rgba(15,25,45,0.75)', backdropFilter: 'blur(18px)', borderRadius: '2rem', padding: '2rem', maxWidth: '700px', width: '100%', border: '1px solid rgba(255,255,255,0.1)' }}>
         <h1 style={{ textAlign: 'center', fontSize: '2rem', background: 'linear-gradient(135deg, #fff, #a5b4fc)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Interprète IA</h1>
         <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', margin: '1.5rem 0' }}>
-          <select value={sourceLang} onChange={(e) => setSourceLang(e.target.value)} disabled={isTranslating} style={{ background: '#1e293b', padding: '0.5rem 1rem', borderRadius: '2rem', color: 'white', border: 'none' }}>
+          <select value={sourceLang} onChange={(e) => setSourceLang(e.target.value as Language)} disabled={isTranslating} style={{ background: '#1e293b', padding: '0.5rem 1rem', borderRadius: '2rem', color: 'white', border: 'none' }}>
             <option value="fr">Français 🇫🇷</option>
             <option value="en">English 🇬🇧</option>
           </select>
           <button onClick={swap} disabled={isTranslating} style={{ background: '#3b82f6', border: 'none', borderRadius: '3rem', width: '48px', fontSize: '1.5rem', color: 'white', cursor: 'pointer' }}>⇄</button>
-          <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} disabled={isTranslating} style={{ background: '#1e293b', padding: '0.5rem 1rem', borderRadius: '2rem', color: 'white', border: 'none' }}>
+          <select value={targetLang} onChange={(e) => setTargetLang(e.target.value as Language)} disabled={isTranslating} style={{ background: '#1e293b', padding: '0.5rem 1rem', borderRadius: '2rem', color: 'white', border: 'none' }}>
             <option value="en">English 🇬🇧</option>
             <option value="fr">Français 🇫🇷</option>
           </select>
