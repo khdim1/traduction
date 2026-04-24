@@ -13,8 +13,8 @@ const App: React.FC = () => {
   const clientRef = useRef<PalabraClient | null>(null);
 
   // Clés en dur pour le test (à déplacer ensuite dans .env)
-  const CLIENT_ID = "5e4c1125b52d05521f4706fafd436dbf";
-  const CLIENT_SECRET = "861f2717610ee8c4794fb3c92dc89e2819cd33264c2fa93d5d4ddd6fbe68645a";
+  const CLIENT_ID = "ffe1eaea40ffe09adbcf9ba4765c9e9b";
+  const CLIENT_SECRET = "7e731b15e3d95c77593beb343553ad5f149cc56f9f106868909a06fa9b14ef75";
 
   const speak = (text: string, lang: string) => {
     if (!window.speechSynthesis) return;
